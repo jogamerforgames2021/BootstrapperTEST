@@ -1,4 +1,6 @@
 {
-  "repository_version": "2024.9.4I",
-  "uploaded_version": "2024.9.4I"
+  "version_info": {
+    "latest_version": "1.2.3",
+    "repository_version": "1.2.0"
+  }
 }
