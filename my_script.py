@@ -10,7 +10,7 @@ import winshell
 from win32com.client import Dispatch
 import shutil
 import stat
-
+import json
 try:
     from pypresence import Presence
 except ImportError:
@@ -45,67 +45,46 @@ def is_admin():
     except:
         return False
 
-def format_size(bytes_num):
-    """Format bytes as human-readable (B, KB, MB, GB)."""
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if bytes_num < 1024:
-            return f"{bytes_num:.2f} {unit}"
-        bytes_num /= 1024
-    return f"{bytes_num:.2f} TB"
+def format_size(bytes):
+    """Convert bytes to a human-readable string (KB, MB, GB)."""
+    if bytes >= 1024 ** 3:
+        return f"{bytes / 1024 ** 3:.2f} GB"
+    elif bytes >= 1024 ** 2:
+        return f"{bytes / 1024 ** 2:.2f} MB"
+    elif bytes >= 1024:
+        return f"{bytes / 1024:.2f} KB"
+    else:
+        return f"{bytes} B"
 
 def download_file(url, local_filename):
-    """Download a file from a given URL with ETA and speed display."""
+    """Download a file from a given URL with an advanced progress bar."""
     try:
         start_time = time.time()
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))
             chunk_size = 8192
-            downloaded_size = 0
             with open(local_filename, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded_size += len(chunk)
-                        elapsed_time = time.time() - start_time
-                        speed = downloaded_size / elapsed_time if elapsed_time > 0 else 0
-
-                        if speed > 0:
-                            eta = (total_size - downloaded_size) / speed
-                        else:
-                            eta = 0
-
-                        if speed < 1024:
-                            speed_str = f"{speed:.2f} B/s"
-                        elif speed < 1024**2:
-                            speed_str = f"{speed/1024:.2f} KB/s"
-                        elif speed < 1024**3:
-                            speed_str = f"{speed/1024/1024:.2f} MB/s"
-                        else:
-                            speed_str = f"{speed/1024/1024/1024:.2f} GB/s"
-
-                        downloaded_str = format_size(downloaded_size)
-                        total_str = format_size(total_size)
-
-                        eta_min, eta_sec = divmod(int(eta), 60)
-                        eta_hr, eta_min = divmod(eta_min, 60)
-                        if eta_hr > 0:
-                            eta_str = f"{eta_hr}h {eta_min}m {eta_sec}s"
-                        elif eta_min > 0:
-                            eta_str = f"{eta_min}m {eta_sec}s"
-                        else:
-                            eta_str = f"{eta_sec}s"
-                        percent = int(100 * downloaded_size / total_size) if total_size else 0
-                        done = int(50 * downloaded_size / total_size) if total_size else 0
-                        sys.stdout.write(
-                            f"\r[{Fore.GREEN}{'=' * done}{' ' * (50-done)}{Fore.RESET}] "
-                            f"{percent}% "
-                            f"({downloaded_str} / {total_str}) "
-                            f"-- {speed_str} "
-                            f"-- ETA: {eta_str}   "
-                        )
-                        sys.stdout.flush()
+                downloaded_size = 0
+                while True:
+                    chunk = r.raw.read(chunk_size)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded_size += len(chunk)
+                    percent = int(100 * downloaded_size / total_size) if total_size else 0
+                    done = int(50 * downloaded_size / total_size) if total_size else 0
+                    elapsed_time = time.time() - start_time
+                    speed = (downloaded_size / elapsed_time) if elapsed_time > 0 else 0  
+                    speed_mb = speed / (1024 * 1024)
+                    size_str = f"{format_size(downloaded_size)}/{format_size(total_size)}"
+                    sys.stdout.write(
+                        f"\r[{Fore.GREEN}{'=' * done}{' ' * (50-done)}{Fore.RESET}] {percent}% "
+                        f"| {size_str} | Speed: {speed_mb:.2f} MB/s"
+                    )
+                    sys.stdout.flush()
         print("\n")
+        print_colored("[^] Download complete!", "green")
     except Exception as e:
         print_colored(f"[ERROR] Failed to download file: {str(e)}", "red")
 
@@ -197,7 +176,10 @@ def show_options_compact():
         f"{Fore.YELLOW}[5]{Style.RESET_ALL} Create a Shortcut  "
         f"{Fore.YELLOW}[6]{Style.RESET_ALL} Open Folder  "
         f"{Fore.YELLOW}[7]{Style.RESET_ALL} Reinstall Among Us  "
-        f"{Fore.RED}[8] Uninstall{Style.RESET_ALL}"
+        f"{Fore.RED}[8] Uninstall{Style.RESET_ALL}  "
+        f"{Fore.YELLOW}[9]{Style.RESET_ALL} Install AUnlocker  "
+        f"{Fore.YELLOW}[10]{Style.RESET_ALL} Change Game Folder Location "
+        f"{Fore.YELLOW}[11]{Style.RESET_ALL} Install Specific Game Version "
     )
 
 def get_appdata_version_file():
@@ -212,7 +194,7 @@ def get_appdata_game_path_file():
     os.makedirs(appdata_dir, exist_ok=True)
     return os.path.join(appdata_dir, "game_path.txt")
 
-LAUNCHER_VERSION = "1.1"
+LAUNCHER_VERSION = "1.2"
 LAUNCHER_VERSION_URL = "https://raw.githubusercontent.com/jogamerforgames2021/AmongUsLauncherNew/refs/heads/main/LauncherVersion.txt"
 LAUNCHER_DOWNLOAD_URL = "https://raw.githubusercontent.com/jogamerforgames2021/AmongUsLauncherNew/refs/heads/main/AmongUsLauncher.exe"
 
@@ -261,6 +243,27 @@ def force_remove_readonly(func, path, excinfo):
     os.chmod(path, stat.S_IWRITE)
     func(path)
 
+def get_available_game_versions(repo="jogamerforgames2021/AmongUsLauncherNew"):
+    """Fetch all releases and their app.zip download URLs from GitHub."""
+    url = f"https://api.github.com/repos/{repo}/releases"
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        releases = response.json()
+        versions = []
+        for release in releases:
+            version = release.get("tag_name")
+            for asset in release.get("assets", []):
+                if asset["name"] == "app.zip":
+                    versions.append({
+                        "version": version,
+                        "url": asset["browser_download_url"]
+                    })
+        return versions
+    except Exception as e:
+        print_colored(f"[ERROR] Failed to fetch game versions: {e}", "red")
+        return []
+
 def fetch_shadow_message():
     """Fetch a message from Shadow from a remote URL."""
     url = "https://raw.githubusercontent.com/jogamerforgames2021/AmongUsLauncherNew/refs/heads/main/message.txt"
@@ -291,6 +294,61 @@ def start_discord_rich_presence():
     except Exception as e:
         print_colored(f"[ERROR] Failed to start Discord Rich Presence: {e}", "red")
         return None
+
+def install_aunlocker(game_version, app_dir):
+    """Install AUnlocker for the current game version if available."""
+    json_url = "https://raw.githubusercontent.com/jogamerforgames2021/AmongUsLauncherNew/refs/heads/main/AUnlockerStuff/Versions.json"
+    try:
+        print_colored("[*] Checking for AUnlocker compatibility...", "yellow")
+        response = requests.get(json_url, timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        for entry in data.get("versions", []):
+            if entry["version"] == game_version:
+                unlocker_url = entry["link"]
+                zip_name = "AUnlocker.zip"
+                print_colored(f"[*] Found AUnlocker for version {game_version}. Downloading...", "green")
+                download_file(unlocker_url, zip_name)
+                print_colored("[#] Extracting AUnlocker...", "blue")
+                extract_zip(zip_name, app_dir)
+                os.remove(zip_name)
+                print_colored("[^] AUnlocker installed successfully!", "green")
+                return
+        print_colored("[!] No compatible AUnlocker found for your game version.", "red")
+    except Exception as e:
+        print_colored(f"[ERROR] Failed to install AUnlocker: {e}", "red")
+
+def change_game_folder_location(app_dir, executable_path, current_version_file):
+    """Change the game folder location and move files using a folder selection dialog."""
+    import tkinter as tk
+    from tkinter import filedialog
+    root = tk.Tk()
+    root.withdraw()  
+    print_colored("[*] Please select the new folder for Among Us.", "cyan")
+    new_path = filedialog.askdirectory(title="Select New Among Us Folder")
+    root.destroy()
+    if not new_path:
+        print_colored("[!] No folder selected. Operation cancelled.", "yellow")
+        return app_dir, executable_path
+    new_path = os.path.abspath(new_path)
+    if new_path == app_dir:
+        print_colored("[!] New path is the same as current path.", "yellow")
+        return app_dir, executable_path
+    try:
+        os.makedirs(new_path, exist_ok=True)
+
+        for item in os.listdir(app_dir):
+            s = os.path.join(app_dir, item)
+            d = os.path.join(new_path, item)
+            shutil.move(s, d)
+        print_colored(f"[#] Game files moved to: {new_path}", "green")
+        save_game_path(new_path)
+        executable_path = os.path.join(new_path, "Among Us.exe")
+        app_dir = new_path
+        return app_dir, executable_path
+    except Exception as e:
+        print_colored(f"[ERROR] Failed to move game files: {e}", "red")
+        return app_dir, executable_path
 
 def main():
     print_colored("[DEBUG] Launcher started!", "cyan")
@@ -328,11 +386,35 @@ def main():
         print_colored(f"[!] Among Us not found at saved location: {app_dir}", "red")
         choice = input(f"{Fore.CYAN}[?] Game is not installed or missing. Do you want to download it? (yes/no): ").lower()
         if choice == 'yes':
-            print_colored("[*] Please enter the folder path where you want to install Among Us, or press Enter for default:", "cyan")
-            new_path = input(f"Path (default: {app_dir}): ").strip()
-            if new_path:
-                app_dir = os.path.abspath(new_path)
+            print_colored(
+                "[*] Choose install location:\n"
+                "  [1] Custom - Select any folder (recommended)\n"
+                "  [2] Directory - Use default 'GAME' folder next to the launcher\n"
+                "Type 1 or 2 and press Enter.",
+                "cyan"
+            )
+            loc_choice = input("Your choice (1/2): ").strip()
+            if loc_choice == '1':
+
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                print_colored("[*] Please select the folder where you want to install Among Us.", "cyan")
+                selected_path = filedialog.askdirectory(title="Select Among Us Install Folder")
+                root.destroy()
+                if selected_path:
+                    app_dir = os.path.abspath(selected_path)
+                    executable_path = os.path.join(app_dir, "Among Us.exe")
+                else:
+                    print_colored("[!] No folder selected. Exiting...", "red")
+                    input("Press Enter to exit...")
+                    return
+            else:
+
+                app_dir = os.path.abspath("GAME")
                 executable_path = os.path.join(app_dir, "Among Us.exe")
+                print_colored(f"[*] Using default folder: {app_dir}", "cyan")
             print_colored("[!] Downloading game...", "green")
             download_file(latest_version_url, local_zip_file)
             os.makedirs(app_dir, exist_ok=True)
@@ -341,9 +423,9 @@ def main():
             os.remove(local_zip_file)
             with open(current_version_file, "w") as f:
                 f.write(latest_version)
-            save_game_path(app_dir)  
+            save_game_path(app_dir)
             print_colored("[^] Game installed successfully!", "green")
-            game_version = latest_version  
+            game_version = latest_version
         else:
             print_colored("[!] Game installation skipped. Exiting...", "red")
             input("Press Enter to exit...")
@@ -385,6 +467,34 @@ def main():
                 print_colored("[ERROR] Game executable not found!", "red")
         elif choice == '2':
             print("Exiting...")
+        elif choice == '11':
+            versions = get_available_game_versions()
+            if not versions:
+                print_colored("[ERROR] No versions found.", "red")
+                continue
+            print_colored("Available Game Versions:", "cyan")
+            for idx, v in enumerate(versions, 1):
+                print(f"{Fore.YELLOW}[{idx}]{Style.RESET_ALL} {v['version']}")
+            sel = input("Select a version to install (number): ").strip()
+            try:
+                sel_idx = int(sel) - 1
+                if sel_idx < 0 or sel_idx >= len(versions):
+                    raise ValueError
+            except ValueError:
+                print_colored("[ERROR] Invalid selection.", "red")
+                continue
+            selected = versions[sel_idx]
+            print_colored(f"[*] Downloading version {selected['version']}...", "green")
+            download_file(selected['url'], local_zip_file)
+            os.makedirs(app_dir, exist_ok=True)
+            print_colored("[#] Extracting game files...", "blue")
+            extract_zip(local_zip_file, app_dir)
+            os.remove(local_zip_file)
+            with open(current_version_file, "w") as f:
+                f.write(selected['version'])
+            save_game_path(app_dir)
+            game_version = selected['version']
+            print_colored(f"[^] Game version {selected['version']} installed successfully!", "green")
             return
         elif choice == '3':
             os.system("start https://www.youtube.com/@ShadowSlimeDEV")
@@ -441,6 +551,10 @@ def main():
                 return
             else:
                 print_colored("[#] Uninstall cancelled.", "yellow")
+        elif choice == '9':
+            install_aunlocker(game_version, app_dir)
+        elif choice == '10':
+            app_dir, executable_path = change_game_folder_location(app_dir, executable_path, current_version_file)
         else:
             print_colored("[ERROR] Invalid choice, please try again.", "red")
 
